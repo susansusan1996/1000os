@@ -15,6 +15,7 @@ CFLAGS="$CFLAGS -I."
 $CC $CFLAGS -Wl,-Tkernel.ld -Wl,-Map=kernel.map -o kernel.elf \
     common/common.c \
     trap/trap.c \
+    alloc_pages/alloc_pages.c \
     kernel.c
 
 # Start QEMU

@@ -1,4 +1,4 @@
-#pragma once
+#pragma once //防止重複包含
 #include "common/common.h"
 
 

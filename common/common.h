@@ -38,3 +38,6 @@ char *strcpy(char *dst, const char *src);
 int strcmp(const char *s1, const char *s2);
 void printf(const char *fmt, ...);
 
+
+#define PAGE_SIZE 4096 //定義一個page大小就是4096KB
+
