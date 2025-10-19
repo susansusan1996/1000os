@@ -131,4 +131,9 @@ void kernel_main(void) {
     // kernel_entry : 我們自己定義的中斷處理程式，轉為 uint32_t 是因為該位置是一個 32 bit 的地址
     WRITE_CSR(stvec, (uint32_t) kernel_entry); // 設定中斷向量
     __asm__ __volatile__("unimp"); // 故意執行非法指令，測試是否真的有去執行中斷
+    // unimp 是一個「偽指令」。
+    // 根據 RISC-V 組合語言程式設計手冊，組譯器會將 unimp 轉換為以下指令：
+    // csrrw x0, cycle, x0
+    // 這行指令試圖將 cycle 暫存器的值寫入 x0，同時從 x0 讀出。
+    // 但由於 cycle 是唯讀（read-only）暫存器，CPU 會判定這是無效指令，並觸發非法指令例外。
 }
