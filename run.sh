@@ -14,8 +14,10 @@ CFLAGS="$CFLAGS -I."
 # 編譯原始碼（分資料夾版本）
 $CC $CFLAGS -Wl,-Tkernel.ld -Wl,-Map=kernel.map -o kernel.elf \
     common/common.c \
+    putchar/putchar.c \
     trap/trap.c \
     alloc_pages/alloc_pages.c \
+    process/process.c \
     kernel.c
 
 # Start QEMU

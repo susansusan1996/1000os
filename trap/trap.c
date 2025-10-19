@@ -1,4 +1,4 @@
-#include "kernel.h"
+#include "panic/panic.h"
 #include "common/common.h"
 #include "trap/trap.h"
 
