@@ -1,10 +1,14 @@
 #pragma once
 #include "common/common.h"
 
+
+// 編譯器會自己根據以下的結構，計算每個變數的偏移量 （相對於傳進來的sp的偏移量）
+// 我們必須確保順序跟stack的儲存順序是一致的
+// 有了這一段struct，就可以用 trap_frame -> ra 來存取某暫存器
 struct trap_frame {
-    uint32_t ra;
-    uint32_t gp;
-    uint32_t tp;
+    uint32_t ra; // 第 0 個成員 （offset 0）
+    uint32_t gp; // 第 1 個成員 （offset 1）
+    uint32_t tp; // 第 2 個成員 （offset 2）
     uint32_t t0;
     uint32_t t1;
     uint32_t t2;
@@ -33,10 +37,10 @@ struct trap_frame {
     uint32_t s10;
     uint32_t s11;
     uint32_t sp;
-} __attribute__((packed));
+} __attribute__((packed)); //確保沒有填充
 
 
-// 中斷入口點
+// 中斷處理函數，真正的函數在 trap.c 中定義
 void kernel_entry(void);   // ← 在 trap.c 中定義
 
 

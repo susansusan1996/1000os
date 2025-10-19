@@ -75,6 +75,8 @@ void putchar(char ch) {
     sbi_call(ch, 0, 0, 0, 0, 0, 0, 1);
 }
 
+
+//putchar-------------------------------------------------------------------------
 // void kernel_main(void) {
 //     const char *s = "\n\nHello World!\n";
 //     for (int i = 0; s[i] != '\0'; i++) {
@@ -86,6 +88,8 @@ void putchar(char ch) {
 //     }
 // }
 
+
+//printf --------------------------------------------------------------------------
 // void kernel_main(void) {
 //     printf("\n\nHello %s\n", "World!");
 //     printf("1 + 2 = %d, %x\n", 1 + 2, 0x1234abcd);
@@ -98,6 +102,7 @@ void putchar(char ch) {
 // }
 
 
+//PANIC --------------------------------------------------------------------------
 // void kernel_main(void) {
 //     memset(__bss, 0, (size_t) __bss_end - (size_t) __bss);
 
@@ -106,10 +111,24 @@ void putchar(char ch) {
 // }
 
 
+//trap --------------------------------------------------------------------------
+//kernel_entry                    stvec
+// （函數本體）                    （CSR 暫存器）
 
+// 0x80200000: ┌─────────────┐    ┌─────────────┐
+//             │ csrw sscratch│    │   stvec     │
+//             │ addi sp, -124│    │ = 0x80200000│ ← 儲存位址
+//             │ sw ra, ...   │    └─────────────┘
+//             │ ...          │           │
+//             └─────────────┘           │
+//                  ↑                    │
+//                  └────────────────────┘
+//                       指向
 void kernel_main(void) {
     memset(__bss, 0, (size_t) __bss_end - (size_t) __bss);
 
-    WRITE_CSR(stvec, (uint32_t) kernel_entry); // new
-    __asm__ __volatile__("unimp"); // new
+    // stvec: 中斷向量暫存器，用來保存，自訂的中斷處理程式的位置
+    // kernel_entry : 我們自己定義的中斷處理程式，轉為 uint32_t 是因為該位置是一個 32 bit 的地址
+    WRITE_CSR(stvec, (uint32_t) kernel_entry); // 設定中斷向量
+    __asm__ __volatile__("unimp"); // 故意執行非法指令，測試是否真的有去執行中斷
 }
