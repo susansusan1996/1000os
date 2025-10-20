@@ -25,3 +25,12 @@ extern struct process *proc_b;
 
 #define PROC_A proc_a
 #define PROC_B proc_b
+
+extern struct process *current_proc; // Currently running process
+extern struct process *idle_proc;    // Idle process
+
+#define CURRENT_PROC current_proc
+#define IDLE_PROC idle_proc
+
+
+void yield(void);

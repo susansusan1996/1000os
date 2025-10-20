@@ -5,9 +5,12 @@
 #include "panic/panic.h"
 #include "putchar/putchar.h"
 
-__attribute__((naked)) void switch_context(uint32_t *prev_sp,
-                                           uint32_t *next_sp) {
+__attribute__((naked)) void switch_context(uint32_t *prev_sp, uint32_t *next_sp) {
+                                                    // 第1個參數         第2個參數
+                                                    //  ↓                 ↓
+                                                    // 自動放到 a0       自動放到 a1
     __asm__ __volatile__(
+        
         // Save callee-saved registers onto the current process's stack.
         "addi sp, sp, -13 * 4\n" // Allocate stack space for 13 4-byte registers
         "sw ra,  0  * 4(sp)\n"   // Save callee-saved registers only
@@ -68,7 +71,7 @@ struct process *create_process(uint32_t pc) {
     // Stack callee-saved registers. These register values will be restored in
     // the first context switch in switch_context.
     uint32_t *sp = (uint32_t *) &proc->stack[sizeof(proc->stack)];
-    *--sp = 0;                      // s11
+    *--sp = 0;                      // s11 把sp這個位置再減四，然後將這個位置的值改成0
     *--sp = 0;                      // s10
     *--sp = 0;                      // s9
     *--sp = 0;                      // s8
@@ -98,11 +101,69 @@ void delay(void) {
 struct process *proc_a;
 struct process *proc_b;
 
+
+struct process *current_proc; // Currently running process
+struct process *idle_proc;    // Idle process
+
+
+//-- yield ----------------------------- Round-robin (輪流) ----------------------------------------------
+// void yield(void) {
+//     // Search for a runnable process
+//     struct process *next = idle_proc;
+//     for (int i = 0; i < PROCS_MAX; i++) {
+
+//         //找下一個process
+//         struct process *proc = &procs[(current_proc->pid + i) % PROCS_MAX];
+//         if (proc->state == PROC_RUNNABLE && proc->pid > 0) {
+//             next = proc;
+//             break;
+//         }
+//     }
+
+//     // If there's no runnable process other than the current one, return and continue processing
+//     if (next == current_proc)
+//         return;
+
+//     // Context switch
+//     struct process *prev = current_proc;
+//     current_proc = next;
+//     switch_context(&prev->sp, &next->sp);
+// }
+
+
+//-- yield ----------------------------- 固定切換到 idle ----------------------------------------------
+void yield(void) {
+    struct process *next = idle_proc;
+
+    //把下一個process的最高stack存到sscratch
+    __asm__ __volatile__(
+        "csrw sscratch, %[sscratch]\n"
+        :
+        : [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
+    );
+
+    // Context switch
+    struct process *prev = current_proc;
+    current_proc = next;
+    switch_context(&prev->sp, &next->sp);
+}
+
+// | 部分                                                             | 意思                                                                                                                                |
+// | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+// | `__asm__`                                                      | 告訴編譯器「這裡要插入組合語言」。                                                                                                                 |
+// | `__volatile__`                                                 | 告訴編譯器「不要優化或刪掉這段指令」，一定要照著執行。                                                                                                       |
+// | `"csrw sscratch, %[sscratch]\n"`                               | 實際的組合語言指令。`csrw` 是 RISC-V 的「寫入控制暫存器」指令。它會把右邊的值寫進暫存器 `sscratch`。                                                                   |
+// | `:`（第一個空欄）                                                     | 這裡是「輸出參數」，但我們沒有輸出，所以空白。                                                                                                           |
+// | `:`（第二個欄位）                                                     | 這裡是「輸入參數」。                                                                                                                        |
+// | `[sscratch] "r" ((uint32_t)&next->stack[sizeof(next->stack)])` | 表示我們要給組合語言一個輸入變數，名稱叫 `sscratch`。 `"r"` 表示放到一個暫存器（register）。右邊的值是：`(uint32_t)&next->stack[sizeof(next->stack)]`。這就是「下一個行程的堆疊頂端位址」。 |
+
+
 void proc_a_entry(void) {
     printf("starting process A\n");
     while (1) {
         putchar('A');
-        switch_context(&proc_a->sp, &proc_b->sp);
+        yield();
+        // switch_context(&proc_a->sp, &proc_b->sp);
         delay();
     }
 }
@@ -111,7 +172,8 @@ void proc_b_entry(void) {
     printf("starting process B\n");
     while (1) {
         putchar('B');
-        switch_context(&proc_b->sp, &proc_a->sp);
+        yield();
+        // switch_context(&proc_b->sp, &proc_a->sp);
         delay();
     }
 }

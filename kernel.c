@@ -103,14 +103,35 @@ void boot(void) {
 
 
 //process --------------------------------------------------------------------------
+// void kernel_main(void) {
+//     memset(__bss, 0, (size_t) __bss_end - (size_t) __bss);
+
+//     WRITE_CSR(stvec, (uint32_t) kernel_entry);
+
+//     proc_a = create_process((uint32_t) proc_a_entry);
+//     proc_b = create_process((uint32_t) proc_b_entry);
+//     proc_a_entry();
+
+//     PANIC("unreachable here!");
+// }
+
+
+//process yield ---------------------------------------------------------------------
 void kernel_main(void) {
     memset(__bss, 0, (size_t) __bss_end - (size_t) __bss);
 
+    printf("\n\n");
+
     WRITE_CSR(stvec, (uint32_t) kernel_entry);
+
+    //創一個 idle process: 保證 scheduler 永遠有一個可切換的目標，避免 crash。
+    idle_proc = create_process((uint32_t) NULL);
+    idle_proc->pid = 0; // idle
+    current_proc = idle_proc;
 
     proc_a = create_process((uint32_t) proc_a_entry);
     proc_b = create_process((uint32_t) proc_b_entry);
-    proc_a_entry();
 
-    PANIC("unreachable here!");
+    yield(); //這邊開始找runnable process 執行
+    PANIC("switched to idle process");
 }
