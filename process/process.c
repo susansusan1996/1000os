@@ -4,6 +4,10 @@
 #include "process.h"
 #include "panic/panic.h"
 #include "putchar/putchar.h"
+#include "page_table/page_table.h"
+
+extern char __kernel_base[];
+extern char __free_ram_end[];
 
 __attribute__((naked)) void switch_context(uint32_t *prev_sp, uint32_t *next_sp) {
                                                     // 第1個參數         第2個參數
@@ -85,10 +89,19 @@ struct process *create_process(uint32_t pc) {
     *--sp = 0;                      // s0
     *--sp = (uint32_t) pc;          // ra
 
+    // Map kernel pages.
+    // 創建process的時候，會同時創立page table,並且拿到該page table的起始位置，
+    // 就開始在這個位置上，映射kernel address
+    uint32_t *page_table = (uint32_t *) alloc_pages(1); //拿到該page table的起始位置
+    for (paddr_t paddr = (paddr_t) __kernel_base;
+        paddr < (paddr_t) __free_ram_end; paddr += PAGE_SIZE)
+        map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+
     // Initialize fields.
     proc->pid = i + 1;
     proc->state = PROC_RUNNABLE;
     proc->sp = (uint32_t) sp;
+    proc->page_table = page_table;
     return proc;
 }
 
@@ -132,21 +145,21 @@ struct process *idle_proc;    // Idle process
 
 
 //-- yield ----------------------------- 固定切換到 idle ----------------------------------------------
-void yield(void) {
-    struct process *next = idle_proc;
+// void yield(void) {
+//     struct process *next = idle_proc;
 
-    //把下一個process的最高stack存到sscratch
-    __asm__ __volatile__(
-        "csrw sscratch, %[sscratch]\n"
-        :
-        : [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
-    );
+//     //把下一個process的最高stack存到sscratch
+//     __asm__ __volatile__(
+//         "csrw sscratch, %[sscratch]\n"
+//         :
+//         : [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
+//     );
 
-    // Context switch
-    struct process *prev = current_proc;
-    current_proc = next;
-    switch_context(&prev->sp, &next->sp);
-}
+//     // Context switch
+//     struct process *prev = current_proc;
+//     current_proc = next;
+//     switch_context(&prev->sp, &next->sp);
+// }
 
 // | 部分                                                             | 意思                                                                                                                                |
 // | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -156,6 +169,43 @@ void yield(void) {
 // | `:`（第一個空欄）                                                     | 這裡是「輸出參數」，但我們沒有輸出，所以空白。                                                                                                           |
 // | `:`（第二個欄位）                                                     | 這裡是「輸入參數」。                                                                                                                        |
 // | `[sscratch] "r" ((uint32_t)&next->stack[sizeof(next->stack)])` | 表示我們要給組合語言一個輸入變數，名稱叫 `sscratch`。 `"r"` 表示放到一個暫存器（register）。右邊的值是：`(uint32_t)&next->stack[sizeof(next->stack)]`。這就是「下一個行程的堆疊頂端位址」。 |
+
+
+
+//-- yield --------- （context switching）時切換該行程（process）的分頁表（page table） ----------------------------------------------
+void yield(void) {
+    // Search for a runnable process
+    struct process *next = idle_proc;
+    for (int i = 0; i < PROCS_MAX; i++) {
+        //找下一個process
+        struct process *proc = &procs[(current_proc->pid + i) % PROCS_MAX];
+        if (proc->state == PROC_RUNNABLE && proc->pid > 0) {
+            next = proc;
+            break;
+        }
+    }
+
+    // If there's no runnable process other than the current one, return and continue processing
+    if (next == current_proc)
+        return;
+
+    __asm__ __volatile__(
+        "sfence.vma\n" //🚧 清空 TLB
+        "csrw satp, %[satp]\n" //🔄 切換到新處程的頁表
+        "sfence.vma\n" //🚧 再次清空 TLB (使新頁表生效)
+        "csrw sscratch, %[sscratch]\n" //📍 設定新處程的堆疊指標
+        :
+        // Don't forget the trailing comma!
+        : [satp] "r" (SATP_SV32 | ((uint32_t) next->page_table / PAGE_SIZE)),
+          [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
+    );
+
+    // Context switch
+    struct process *prev = current_proc;
+    current_proc = next;
+    switch_context(&prev->sp, &next->sp);
+}
+
 
 
 void proc_a_entry(void) {

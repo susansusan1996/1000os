@@ -1,6 +1,10 @@
 ENTRY(boot)
 
 SECTIONS {
+    /* 核心程式碼的起始位址 */
+    . = 0x80200000;
+    __kernel_base = .;
+
     /* 設定起始位址為 QEMU RISC-V virt machine 的 RAM 起始位置 */
     . = 0x80200000;
 

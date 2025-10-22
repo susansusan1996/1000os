@@ -1,0 +1,380 @@
+## 總結：
+所有 process 共享一份相同的 kernel space，
+而 user space 是各自獨立的。這是作業系統設計的基本原則之一！！！！！！！！
+
+
+## 以下這段程式碼在做什麼？
+
+uint32_t *page_table = (uint32_t *) alloc_pages(1);
+
+for (paddr_t paddr = (paddr_t) __kernel_base;
+          paddr < (paddr_t) __free_ram_end; 
+               paddr += PAGE_SIZE)
+    map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+
+## 1. 為每個新 process 創建獨立的頁表
+cuint32_t *page_table = (uint32_t *) alloc_pages(1);
+每個 process 都有自己的頁表，用來管理虛擬記憶體映射。
+
+
+## 2. 將整個 kernel 映射到每個 process 的頁表中
+cfor (paddr_t paddr = (paddr_t) __kernel_base;
+      paddr < (paddr_t) __free_ram_end; 
+      paddr += PAGE_SIZE)
+    map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+    //       ^^^^^^^^^^^^^^^^  ^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^
+    //       虛擬地址 = paddr    物理地址  權限: 可讀、可寫、可執行
+```
+
+**重點**：`虛擬地址 = 物理地址` (identity mapping / 恆等映射)
+
+## 為什麼要這樣做？
+
+### 原因 1：**Kernel 必須在每個 process 的地址空間中都可見**
+```
+Process A 的虛擬記憶體空間          Process B 的虛擬記憶體空間
+┌─────────────────────────┐        ┌─────────────────────────┐
+│ 0x80000000              │        │ 0x80000000              │
+│   ↓                     │        │   ↓                     │
+│ Kernel 區域             │        │ Kernel 區域             │
+│ (所有 process 共用)      │        │ (所有 process 共用)      │
+│                         │        │                         │
+├─────────────────────────┤        ├─────────────────────────┤
+│ 0x00000000              │        │ 0x00000000              │
+│   ↓                     │        │   ↓                     │
+│ Process A 的資料         │        │ Process B 的資料         │
+│ (獨立，互不干擾)         │        │ (獨立，互不干擾)         │
+└─────────────────────────┘        └─────────────────────────┘
+
+
+### 原因 2：System call 和 interrupt 需要執行 kernel 程式碼
+當 process 執行到 system call 或發生 interrupt 時：
+c// Process 正在運行 (使用自己的頁表)
+user_code();  // 在 process 的虛擬地址空間
+
+// 觸發 system call
+syscall();    // CPU 切換到 kernel mode
+
+// ⚠️ 問題：此時 CPU 還在使用 process 的頁表！
+//    如果頁表中沒有 kernel 的映射，CPU 就找不到 kernel 程式碼了！
+
+// ✅ 解決：因為我們已經把 kernel 映射到每個 process 的頁表中
+//    所以 CPU 可以順利執行 kernel 程式碼
+handle_syscall();  // 在同一個頁表中執行 kernel 程式碼
+
+// 返回 user mode
+return_to_user();
+
+
+### 原因 3：Context switch 時不需要切換 kernel 映射
+void switch_context(uint32_t *prev_sp, uint32_t *next_sp) {
+    // 保存當前 process 的暫存器
+    // ...
+    
+    // 切換堆疊
+    // ...
+    
+    // 恢復下一個 process 的暫存器
+    // ...
+    
+    // ⚠️ 注意：這段程式碼本身就是 kernel 程式碼！
+    //    如果頁表中沒有 kernel 映射，這段程式碼執行到一半就會出錯
+}
+```
+
+## 完整流程圖
+```
+創建新 process 時:
+
+1. 分配新頁表
+   ┌──────────────────┐
+   │ page_table (空)   │
+   └──────────────────┘
+
+2. 映射 kernel 區域 (identity mapping)
+   ┌──────────────────────────────────────┐
+   │ 虛擬 0x80000000 → 物理 0x80000000    │
+   │ 虛擬 0x80001000 → 物理 0x80001000    │
+   │ 虛擬 0x80002000 → 物理 0x80002000    │
+   │ ...                                  │
+   │ (kernel 的所有頁面)                   │
+   └──────────────────────────────────────┘
+
+3. 稍後會映射 process 自己的頁面
+   ┌──────────────────────────────────────┐
+   │ 虛擬 0x00001000 → 物理 0x12345000    │
+   │ 虛擬 0x00002000 → 物理 0x23456000    │
+   │ ...                                  │
+   │ (process 的程式碼、資料、堆疊)        │
+   └──────────────────────────────────────┘
+```
+
+## 實際執行流程
+```
+Process A 執行中:
+├─ 使用 Process A 的頁表
+├─ 可以存取自己的記憶體 (0x00000000 - ...)
+├─ 也可以存取 kernel (0x80000000 - ...)
+│
+├─ 觸發 system call
+│  └─ CPU 切到 kernel mode
+│     └─ 執行 kernel 程式碼 (0x80000000 區域)
+│        └─ 仍然使用 Process A 的頁表 ✓
+│
+├─ Context switch 到 Process B
+│  ├─ switch_context() 在 kernel 中執行
+│  ├─ 保存 Process A 的暫存器到 Process A 的堆疊
+│  ├─ 切換 satp (切換頁表)
+│  │   ├─ 現在使用 Process B 的頁表
+│  │   └─ Kernel 映射仍然存在 ✓
+│  └─ 恢復 Process B 的暫存器
+│
+└─ Process B 繼續執行
+   ├─ 使用 Process B 的頁表
+   ├─ 可以存取自己的記憶體
+   └─ 也可以存取 kernel (因為也映射了 kernel)
+
+
+
+
+Process A                Process B                Process C
+┌──────────────┐        ┌──────────────┐        ┌──────────────┐
+│ 0xFFFFFFFF   │        │ 0xFFFFFFFF   │        │ 0xFFFFFFFF   │
+├──────────────┤        ├──────────────┤        ├──────────────┤
+│              │        │              │        │              │
+│   Kernel     │◄───────┼──  Kernel    │◄───────┼──  Kernel    │
+│   Space      │  共用   │   Space      │  共用   │   Space      │
+│              │  同一份 │              │  同一份 │              │
+│ 0x80000000   │  物理   │ 0x80000000   │  物理   │ 0x80000000   │
+├──────────────┤  記憶體 ├──────────────┤  記憶體 ├──────────────┤
+│              │        │              │        │              │
+│   User       │        │   User       │        │   User       │
+│   Space      │        │   Space      │        │   Space      │
+│   (Process A)│        │   (Process B)│        │   (Process C)│
+│              │  獨立   │              │  獨立   │              │
+│ 0x00000000   │        │ 0x00000000   │        │ 0x00000000   │
+└──────────────┘        └──────────────┘        └──────────────┘
+     獨立的                  獨立的                  獨立的
+   物理記憶體              物理記憶體              物理記憶體
+```
+
+## 主流作業系統的實作
+
+### Linux
+```
+64-bit Linux (x86_64):
+┌────────────────────────────────┐
+│ 0xFFFFFFFFFFFFFFFF             │
+│         ↓                      │
+│    Kernel Space                │
+│    (約 128 TB)                 │
+│                                │
+├────────────────────────────────┤ ← 0xFFFF800000000000
+│    (未映射區域)                 │
+├────────────────────────────────┤ ← 0x00007FFFFFFFFFFF
+│         ↑                      │
+│    User Space                  │
+│    (約 128 TB)                 │
+│                                │
+│ 0x0000000000000000             │
+└────────────────────────────────┘
+
+特點:
+- 所有 process 共享相同的 kernel space 映射
+- 每個 process 有獨立的 user space
+- Kernel 可以直接存取所有物理記憶體 (direct mapping)
+```
+
+### Windows
+```
+64-bit Windows:
+┌────────────────────────────────┐
+│ 0xFFFFFFFFFFFFFFFF             │
+│         ↓                      │
+│    Kernel Space                │
+│    (System space)              │
+│                                │
+├────────────────────────────────┤ ← 約 0x00007FFFFFFFFFFF
+│         ↑                      │
+│    User Space                  │
+│    (Per-process)               │
+│                                │
+│ 0x0000000000000000             │
+└────────────────────────────────┘
+
+特點:
+- 類似 Linux，kernel space 共享
+- User space 每個 process 獨立
+```
+
+### macOS / BSD
+```
+類似的分割設計:
+- Kernel space 共享
+- User space 隔離
+
+
+
+### 為什麼要這樣設計？
+優點 1：效率
+// System call 時不需要切換頁表
+syscall() {
+    // 進入 kernel mode
+    // 還在使用同一個頁表 ← 快！
+    // 不需要 TLB flush
+}
+
+// Context switch 時只需切換 user space
+switch_process(A, B) {
+    // Kernel space 映射不變 ← 快！
+    // 只切換 user space 部分
+    // 減少 TLB miss
+}
+
+
+優點 2：簡化實作
+c// ✅ Kernel 程式碼可以使用固定地址
+
+// Kernel 中的全域變數
+uint32_t kernel_data = 0x80001234;
+
+// 在任何 process 的 context 中都能存取
+void kernel_function() {
+    // 不管現在執行哪個 process
+    // kernel_data 的地址都是 0x80001234
+    *((uint32_t *) 0x80001234) = 42;  // ✓ 正確
+}
+
+
+優點 3：安全性
+c// User mode 程式碼嘗試存取 kernel space
+
+void user_code() {
+    uint32_t *kernel_ptr = (uint32_t *) 0x80000000;
+    *kernel_ptr = 42;  // ❌ Page Fault!
+    
+    // 因為 kernel 映射沒有 PAGE_U 位元
+    // CPU 在 user mode 無法存取
+}
+
+// 只有在 kernel mode 才能存取
+void syscall_handler() {
+    // CPU 在 kernel mode
+    uint32_t *kernel_ptr = (uint32_t *) 0x80000000;
+    *kernel_ptr = 42;  // ✓ 可以存取
+}
+```
+
+## 實際記憶體佈局
+```
+物理記憶體 (真實的 RAM):
+┌────────────────────────────────┐
+│ 0x90000000                     │
+│    Process C 的資料             │
+├────────────────────────────────┤
+│ 0x88000000                     │
+│    Process B 的資料             │
+├────────────────────────────────┤
+│ 0x85000000                     │
+│    Process A 的資料             │
+├────────────────────────────────┤
+│ 0x80000000                     │
+│    Kernel (共用)                │
+│    - 程式碼                     │
+│    - 資料結構                   │
+│    - 裝置驅動程式               │
+└────────────────────────────────┘
+
+虛擬記憶體 (每個 Process 看到的):
+                                ┌─→ 映射到相同的
+Process A    Process B    Process C     物理地址
+0x80000000   0x80000000   0x80000000 ──┘
+   ↓            ↓            ↓
+ Kernel       Kernel       Kernel     (共享)
+
+0x00001000   0x00001000   0x00001000
+   ↓            ↓            ↓
+物理          物理          物理
+0x85000000   0x88000000   0x90000000  (獨立)
+```
+
+## 特殊設計：Microkernel
+
+有些系統採用不同的設計 (但相對少見)：
+```
+Microkernel 設計 (如 seL4, Minix):
+┌────────────────────────────────┐
+│   Minimal Kernel               │  極小的 kernel
+├────────────────────────────────┤
+│   Drivers as User Processes    │  驅動程式跑在 user space
+├────────────────────────────────┤
+│   File System Process          │  檔案系統也是 user process
+├────────────────────────────────┤
+│   User Applications            │
+└────────────────────────────────┘
+
+優點: 更安全、更模組化
+缺點: 效能較差 (需要更多 IPC)
+```
+
+## 新的安全機制
+
+近年有些新的安全機制，但基本原理不變：
+
+### KPTI (Kernel Page Table Isolation) - 針對 Meltdown 漏洞
+```
+引入 KPTI 後 (Linux 4.15+):
+
+User mode 執行時:
+┌────────────────────────────────┐
+│ 極少的 kernel 映射 (只有必要的) │
+├────────────────────────────────┤
+│ User Space                     │
+└────────────────────────────────┘
+
+Kernel mode 執行時:
+┌────────────────────────────────┐
+│ 完整的 Kernel Space            │
+├────────────────────────────────┤
+│ User Space                     │
+└────────────────────────────────┘
+
+代價: System call 時需要切換頁表 (效能損失)
+
+
+############################################
+// Kernel 初始化完成後的記憶體狀態
+
+物理記憶體:
+0x80000000
+┌─────────────────────────────────┐
+│ Kernel 佔用 (6MB)                │
+│ - 程式碼、資料、初始堆積          │
+└─────────────────────────────────┘
+0x80600000  ← __free_ram_end
+┌─────────────────────────────────┐
+│ 可用記憶體 (122MB)               │
+│                                 │
+│ alloc_pages() 從這裡開始分配:    │
+│                                 │
+│ 0x80600000: Process A 的頁表     │
+│ 0x80601000: Process A 的程式碼   │
+│ 0x80602000: Process A 的資料     │
+│ 0x80603000: Process A 的堆疊     │
+│                                 │
+│ 0x80604000: Process B 的頁表     │
+│ 0x80605000: Process B 的程式碼   │
+│ 0x80606000: Process B 的資料     │
+│ 0x80607000: Process B 的堆疊     │
+│                                 │
+│ 0x80608000: 第二層頁表 #1        │
+│ 0x80609000: 第二層頁表 #2        │
+│ ...                             │
+│                                 │
+│ 還有 100+ MB 可用                │
+│                                 │
+└─────────────────────────────────┘
+0x88000000  ← 真正的 RAM 結束
+
+
+
